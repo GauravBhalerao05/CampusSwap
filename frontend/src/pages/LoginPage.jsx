@@ -63,12 +63,12 @@ export default function LoginPage() {
 
         <form onSubmit={handleSubmit} noValidate>
           <div className="mb-3">
-            <label className="form-label">College Email</label>
+            <label className="form-label">Email</label>
             <input
               name="email"
               type="email"
               className="form-control"
-              placeholder="you@univ.edu"
+              placeholder="student@gmail.com"
               required
               autoComplete="email"
               value={form.email}

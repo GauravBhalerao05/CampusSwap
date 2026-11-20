@@ -12,8 +12,43 @@ const transactionsRoutes = require('./routes/transactions');
 const reviewsRoutes = require('./routes/reviews');
 const { router: messagesRoutes } = require('./routes/messages');
 
-// Middleware
-app.use(cors());
+// Dynamic CORS configuration supporting development and production environments
+const isDev = process.env.NODE_ENV !== 'production';
+
+const getAllowedOrigins = () => {
+  const envOrigins = (process.env.CORS_ORIGIN || process.env.FRONTEND_URL || '')
+    .split(',')
+    .map((o) => o.trim())
+    .filter(Boolean);
+  return envOrigins;
+};
+
+const corsOptions = {
+  origin: (origin, callback) => {
+    // Allow non-browser requests (e.g. mobile apps, curl, server-to-server)
+    if (!origin) return callback(null, true);
+
+    // In development mode, allow localhost and 127.0.0.1 on any port (3000, 5173, etc.)
+    if (isDev) {
+      if (/^http:\/\/(localhost|127\.0\.0\.1)(:\d+)?$/.test(origin)) {
+        return callback(null, true);
+      }
+    }
+
+    const allowed = getAllowedOrigins();
+    if (allowed.length === 0 || allowed.includes('*') || allowed.includes(origin)) {
+      return callback(null, true);
+    }
+
+    // Reject origin cleanly without throwing 500 error
+    return callback(null, false);
+  },
+  credentials: true,
+  methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
+  allowedHeaders: ['Content-Type', 'Authorization']
+};
+
+app.use(cors(corsOptions));
 app.use(express.json());
 
 // Basic health check endpoint
@@ -47,7 +82,6 @@ app.use('/api/v1/offers', offersRoutes);
 app.use('/api/v1/transactions', transactionsRoutes);
 app.use('/api/v1/reviews', reviewsRoutes);
 app.use('/api/v1/messages', messagesRoutes);
-
 
 // 404 Route Handler
 app.use((req, res) => {

@@ -112,7 +112,10 @@ mysql -u root -p campusswap < backend/database/seed.sql
    DB_USER=root
    DB_PASSWORD=your_mysql_password
    DB_NAME=campusswap
-   COLLEGE_EMAIL_DOMAIN=univ.edu
+   RESEND_API_KEY=re_your_api_key_here
+   EMAIL_FROM=CampusSwap <onboarding@resend.dev>
+   FRONTEND_URL=http://localhost:5173
+   CORS_ORIGIN=http://localhost:5173
    JWT_SECRET=your_jwt_secret_change_in_production
    JWT_EXPIRES_IN=24h
    ```

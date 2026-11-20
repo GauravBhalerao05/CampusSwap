@@ -129,15 +129,16 @@ Stores student and administrator account credentials, verification standing, and
 ---
 
 ### 4.2 `email_verifications`
-Tracks 6-digit one-time password (OTP) verification tokens with a strict expiration window.
+Tracks 6-digit one-time password (OTP) verification tokens with a strict expiration window and attempt limits. Stored OTP is cryptographically hashed with bcrypt.
 
 | Column Name | Data Type | Nullable | Default | Constraints / Descriptions |
 | :--- | :--- | :---: | :---: | :--- |
 | `id` | `BIGINT UNSIGNED` | No | Auto Inc | Primary Key |
 | `user_id` | `BIGINT UNSIGNED` | No | None | Foreign Key $\rightarrow$ `users(id)` ON DELETE CASCADE |
-| `otp_code` | `VARCHAR(6)` | No | None | 6-digit verification code |
-| `expires_at` | `DATETIME` | No | None | Token validity limit (typically 15 minutes) |
+| `otp_code` | `VARCHAR(255)` | No | None | Cryptographically hashed OTP code |
+| `expires_at` | `DATETIME` | No | None | Token validity limit (5 minutes) |
 | `is_used` | `BOOLEAN` | No | `FALSE` | Set to `TRUE` upon successful validation |
+| `attempts` | `INT` | No | `0` | Failed verification attempts (max 5) |
 | `created_at` | `TIMESTAMP` | No | `CURRENT_TIMESTAMP` | Row creation timestamp |
 
 ---
@@ -474,14 +475,15 @@ CREATE TABLE users (
 CREATE TABLE email_verifications (
     id BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
     user_id BIGINT UNSIGNED NOT NULL,
-    otp_code VARCHAR(6) NOT NULL,
+    otp_code VARCHAR(255) NOT NULL,
     expires_at DATETIME NOT NULL,
     is_used BOOLEAN NOT NULL DEFAULT FALSE,
+    attempts INT NOT NULL DEFAULT 0,
     created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
     CONSTRAINT fk_verifications_user 
         FOREIGN KEY (user_id) REFERENCES users(id) 
         ON DELETE CASCADE ON UPDATE CASCADE,
-    INDEX idx_verifications_user_lookup (user_id, otp_code, is_used)
+    INDEX idx_verifications_user_lookup (user_id, is_used, expires_at)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 -- -----------------------------------------------------------------------------

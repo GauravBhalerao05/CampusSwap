@@ -2,29 +2,43 @@
  * Comprehensive Automated Tests for CampusSwap Authentication Module
  * File: backend/test-auth.js
  * 
- * Tests:
- * 1. Registration with invalid college email domain -> 400 INVALID_EMAIL_DOMAIN
- * 2. Registration with weak password -> 400 VALIDATION_ERROR
- * 3. Successful registration -> 201 PENDING_VERIFICATION + OTP created
- * 4. Duplicate registration with same email -> 409 DUPLICATE_ENTITY
- * 5. Login prior to email verification -> 403 ACCOUNT_INACTIVE
+ * Verifies:
+ * 1. Invalid email format rejection -> 400 VALIDATION_ERROR
+ * 2. Password complexity validation -> 400 VALIDATION_ERROR
+ * 3. Successful registration with Gmail address -> 201 PENDING_VERIFICATION + hashed OTP created
+ * 4. Duplicate email rejection -> 409 DUPLICATE_ENTITY
+ * 5. Unverified login rejection -> 403 ACCOUNT_INACTIVE
  * 6. Email verification with invalid OTP -> 400 INVALID_OTP
  * 7. Email verification with valid OTP -> 200 OK + user ACTIVE
  * 8. Login with wrong password -> 401 INVALID_CREDENTIALS
- * 9. Login with correct credentials -> 200 OK + JWT issued
- * 10. Access protected route /me without token -> 401 UNAUTHENTICATED
- * 11. Access protected route /me with token -> 200 OK + user profile
- * 12. Stateless logout -> 200 OK acknowledgment
- * 13. Role-based authorization check (STUDENT vs ADMIN)
+ * 9. Login with correct password -> 200 OK + JWT returned
+ * 10. Unauthenticated access to protected route -> 401 UNAUTHENTICATED
+ * 11. Authenticated access to protected route -> 200 OK
+ * 12. Stateless logout -> 200 OK
+ * 13. Student access to ADMIN route -> 403 FORBIDDEN_OPERATION
  */
+
+process.env.NODE_ENV = 'test';
 
 const http = require('http');
 const pool = require('./config/database');
 const app = require('./app');
+const emailService = require('./services/emailService');
 
 let server;
 const TEST_PORT = 5099;
 const BASE_URL = `http://127.0.0.1:${TEST_PORT}`;
+
+// Mock email client to simulate Resend delivery during local test suite
+let sentEmails = [];
+emailService._setClientForTesting({
+  emails: {
+    send: async (payload) => {
+      sentEmails.push(payload);
+      return { data: { id: 'test_resend_email_id_' + Date.now() }, error: null };
+    }
+  }
+});
 
 function makeRequest(method, path, body = null, token = null) {
   return new Promise((resolve, reject) => {
@@ -48,21 +62,28 @@ function makeRequest(method, path, body = null, token = null) {
         headers
       },
       (res) => {
-        let data = '';
-        res.on('data', (chunk) => (data += chunk));
+        let rawData = '';
+        res.on('data', (chunk) => {
+          rawData += chunk;
+        });
         res.on('end', () => {
-          let parsed;
+          let parsedBody = null;
           try {
-            parsed = JSON.parse(data);
+            parsedBody = JSON.parse(rawData);
           } catch (e) {
-            parsed = data;
+            parsedBody = rawData;
           }
-          resolve({ status: res.statusCode, body: parsed });
+          resolve({
+            status: res.statusCode,
+            headers: res.headers,
+            body: parsedBody
+          });
         });
       }
     );
 
-    req.on('error', reject);
+    req.on('error', (err) => reject(err));
+
     if (payload) {
       req.write(payload);
     }
@@ -90,29 +111,28 @@ async function runTests() {
     server = app.listen(TEST_PORT, resolve);
   });
 
-  const collegeDomain = process.env.COLLEGE_EMAIL_DOMAIN || 'univ.edu';
-  const testEmail = `test.student.${Date.now()}@${collegeDomain}`;
-  const invalidEmail = `test.student.${Date.now()}@gmail.com`;
+  const gmailEmail = `student.${Date.now()}@gmail.com`;
+  const malformedEmail = `invalid-email-format-without-at-domain`;
   const validPassword = 'SecurePassword123!';
   let generatedOtp = null;
   let authToken = null;
   let createdUserId = null;
 
   try {
-    // 1. Invalid domain check
+    // 1. Invalid email format check
     const res1 = await makeRequest('POST', '/api/v1/auth/register', {
-      email: invalidEmail,
+      email: malformedEmail,
       password: validPassword,
       fullName: 'Test Student'
     });
     assert(
-      res1.status === 400 && res1.body.error?.code === 'INVALID_EMAIL_DOMAIN',
-      'Rejects non-college email domain with 400 INVALID_EMAIL_DOMAIN'
+      res1.status === 400 && res1.body.error?.code === 'VALIDATION_ERROR',
+      'Rejects invalid email format with 400 VALIDATION_ERROR'
     );
 
     // 2. Password validation check
     const res2 = await makeRequest('POST', '/api/v1/auth/register', {
-      email: testEmail,
+      email: gmailEmail,
       password: 'weak',
       fullName: 'Test Student'
     });
@@ -121,9 +141,9 @@ async function runTests() {
       'Rejects weak password with 400 VALIDATION_ERROR'
     );
 
-    // 3. Successful registration
+    // 3. Successful registration with Gmail address
     const res3 = await makeRequest('POST', '/api/v1/auth/register', {
-      email: testEmail,
+      email: gmailEmail,
       password: validPassword,
       fullName: 'Test Student',
       phoneNumber: '+1-555-0199',
@@ -136,12 +156,22 @@ async function runTests() {
       res3.body.success === true &&
       res3.body.data?.status === 'PENDING_VERIFICATION' &&
       !!generatedOtp,
-      'Registers student successfully with 201 Created and PENDING_VERIFICATION status'
+      'Registers student with Gmail address successfully (201 PENDING_VERIFICATION)'
+    );
+
+    // Verify OTP was stored as hash, not plain text in DB
+    const [verRows] = await pool.query(
+      'SELECT otp_code FROM email_verifications WHERE user_id = ? ORDER BY created_at DESC LIMIT 1',
+      [createdUserId]
+    );
+    assert(
+      verRows.length > 0 && verRows[0].otp_code.startsWith('$2') && verRows[0].otp_code !== generatedOtp,
+      'Stores cryptographically hashed OTP in database instead of plain text'
     );
 
     // 4. Duplicate registration
     const res4 = await makeRequest('POST', '/api/v1/auth/register', {
-      email: testEmail,
+      email: gmailEmail,
       password: validPassword,
       fullName: 'Test Student Duplicate'
     });
@@ -152,7 +182,7 @@ async function runTests() {
 
     // 5. Login before verification
     const res5 = await makeRequest('POST', '/api/v1/auth/login', {
-      email: testEmail,
+      email: gmailEmail,
       password: validPassword
     });
     assert(
@@ -162,7 +192,7 @@ async function runTests() {
 
     // 6. Verification with invalid OTP
     const res6 = await makeRequest('POST', '/api/v1/auth/verify-email', {
-      email: testEmail,
+      email: gmailEmail,
       otpCode: '000000'
     });
     assert(
@@ -172,7 +202,7 @@ async function runTests() {
 
     // 7. Verification with correct OTP
     const res7 = await makeRequest('POST', '/api/v1/auth/verify-email', {
-      email: testEmail,
+      email: gmailEmail,
       otpCode: generatedOtp
     });
     assert(
@@ -180,9 +210,19 @@ async function runTests() {
       'Verifies email successfully with 200 OK'
     );
 
+    // Verify OTP cannot be reused
+    const res7b = await makeRequest('POST', '/api/v1/auth/verify-email', {
+      email: gmailEmail,
+      otpCode: generatedOtp
+    });
+    assert(
+      res7b.status === 400 && res7b.body.error?.code === 'INVALID_OTP',
+      'Prevents reuse of verified OTP with 400 INVALID_OTP'
+    );
+
     // 8. Login with wrong password
     const res8 = await makeRequest('POST', '/api/v1/auth/login', {
-      email: testEmail,
+      email: gmailEmail,
       password: 'WrongPassword999!'
     });
     assert(
@@ -192,7 +232,7 @@ async function runTests() {
 
     // 9. Login with correct password
     const res9 = await makeRequest('POST', '/api/v1/auth/login', {
-      email: testEmail,
+      email: gmailEmail,
       password: validPassword
     });
     authToken = res9.body.data?.token;
@@ -200,7 +240,7 @@ async function runTests() {
       res9.status === 200 &&
       res9.body.success === true &&
       typeof authToken === 'string' &&
-      res9.body.data?.user?.email === testEmail &&
+      res9.body.data?.user?.email === gmailEmail &&
       res9.body.data?.user?.status === 'ACTIVE' &&
       !res9.body.data?.user?.password_hash,
       'Logs in verified user with 200 OK, returns JWT token, and hides password hash'
@@ -217,7 +257,7 @@ async function runTests() {
     const res11 = await makeRequest('GET', '/api/v1/auth/me', null, authToken);
     assert(
       res11.status === 200 &&
-      res11.body.data?.email === testEmail &&
+      res11.body.data?.email === gmailEmail &&
       res11.body.data?.role === 'STUDENT',
       'Permits authenticated access to /me with valid Bearer token'
     );

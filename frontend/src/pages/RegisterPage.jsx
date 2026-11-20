@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
 import { useAuth } from '../contexts/AuthContext';
 import { authApi } from '../api/client';
@@ -10,8 +10,23 @@ export default function RegisterPage() {
   const [form, setForm] = useState({ email: '', password: '', fullName: '', phoneNumber: '', department: '' });
   const [otp, setOtp] = useState('');
   const [loading, setLoading] = useState(false);
+  const [resending, setResending] = useState(false);
+  const [cooldown, setCooldown] = useState(60);
   const [error, setError] = useState('');
   const [success, setSuccess] = useState('');
+
+  // Handle 60s cooldown timer for OTP resend
+  useEffect(() => {
+    let timer = null;
+    if (step === 'verify' && cooldown > 0) {
+      timer = setInterval(() => {
+        setCooldown(prev => (prev > 0 ? prev - 1 : 0));
+      }, 1000);
+    }
+    return () => {
+      if (timer) clearInterval(timer);
+    };
+  }, [step, cooldown]);
 
   const handleChange = (e) => {
     setForm(prev => ({ ...prev, [e.target.name]: e.target.value }));
@@ -20,8 +35,15 @@ export default function RegisterPage() {
 
   const handleRegister = async (e) => {
     e.preventDefault();
-    setLoading(true);
     setError('');
+
+    const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+    if (!emailRegex.test(form.email.trim())) {
+      setError('Please enter a valid email address.');
+      return;
+    }
+
+    setLoading(true);
     try {
       await authApi.register({
         email: form.email.trim(),
@@ -30,8 +52,9 @@ export default function RegisterPage() {
         phoneNumber: form.phoneNumber.trim() || undefined,
         department: form.department.trim() || undefined,
       });
-      setSuccess('Registration successful! Check your college email for the 6-digit OTP.');
+      setSuccess('Registration successful! Check your email inbox for the 6-digit verification code.');
       setStep('verify');
+      setCooldown(60);
     } catch (err) {
       const msg = err.response?.data?.error?.message || 'Registration failed. Please try again.';
       setError(msg);
@@ -57,6 +80,23 @@ export default function RegisterPage() {
     }
   };
 
+  const handleResendOtp = async () => {
+    if (cooldown > 0 || resending) return;
+    setResending(true);
+    setError('');
+    setSuccess('');
+    try {
+      const res = await authApi.resendOtp({ email: form.email.trim() });
+      setSuccess(res.data?.data?.message || 'A new verification code has been dispatched to your email.');
+      setCooldown(60);
+    } catch (err) {
+      const msg = err.response?.data?.error?.message || 'Failed to resend verification code. Please try again.';
+      setError(msg);
+    } finally {
+      setResending(false);
+    }
+  };
+
   return (
     <div className="auth-page">
       <div className="auth-card fade-in-up">
@@ -65,7 +105,7 @@ export default function RegisterPage() {
             🎓 CampusSwap
           </div>
           <p className="text-muted-cs mt-1" style={{ fontSize: '0.9rem' }}>
-            {step === 'register' ? 'Create your campus marketplace account' : 'Verify your college email'}
+            {step === 'register' ? 'Create your campus marketplace account' : 'Verify your email address'}
           </p>
         </div>
 
@@ -79,9 +119,11 @@ export default function RegisterPage() {
               <input name="fullName" type="text" className="form-control" placeholder="Alex Smith" required value={form.fullName} onChange={handleChange} />
             </div>
             <div className="mb-3">
-              <label className="form-label">College Email *</label>
-              <input name="email" type="email" className="form-control" placeholder="you@univ.edu" required value={form.email} onChange={handleChange} />
-              <div className="form-text" style={{ color: 'var(--cs-text-dim)', fontSize: '0.78rem' }}>Must end with your institutional domain (e.g. @univ.edu)</div>
+              <label className="form-label">Email *</label>
+              <input name="email" type="email" className="form-control" placeholder="student@gmail.com" required value={form.email} onChange={handleChange} />
+              <div className="form-text" style={{ color: 'var(--cs-text-dim)', fontSize: '0.78rem' }}>
+                We'll send a 6-digit verification code to this email (Gmail and other providers supported).
+              </div>
             </div>
             <div className="mb-3">
               <label className="form-label">Password *</label>
@@ -107,6 +149,9 @@ export default function RegisterPage() {
               <p className="text-muted-cs" style={{ fontSize: '0.9rem' }}>
                 We sent a 6-digit code to <strong style={{ color: 'var(--cs-text)' }}>{form.email}</strong>
               </p>
+              <p style={{ fontSize: '0.8rem', color: 'var(--cs-text-dim)' }}>
+                Code expires in 5 minutes. Check spam folder if not found.
+              </p>
             </div>
             <div className="mb-4">
               <label className="form-label">Verification OTP *</label>
@@ -125,9 +170,36 @@ export default function RegisterPage() {
               {loading ? <span className="spinner-border spinner-border-sm me-2" /> : null}
               Verify & Sign In
             </button>
-            <button type="button" className="btn btn-link w-100 p-0" style={{ color: 'var(--cs-text-muted)', fontSize: '0.85rem' }} onClick={() => { setStep('register'); setError(''); setSuccess(''); }}>
-              ← Back to registration
-            </button>
+
+            <div className="d-flex justify-content-between align-items-center mb-3">
+              <button
+                type="button"
+                className="btn btn-sm btn-outline-secondary"
+                disabled={cooldown > 0 || resending}
+                onClick={handleResendOtp}
+                style={{ fontSize: '0.82rem' }}
+              >
+                {resending ? (
+                  <>
+                    <span className="spinner-border spinner-border-sm me-1" />
+                    Resending...
+                  </>
+                ) : cooldown > 0 ? (
+                  `Resend Code in ${cooldown}s`
+                ) : (
+                  'Resend Code'
+                )}
+              </button>
+
+              <button
+                type="button"
+                className="btn btn-link p-0"
+                style={{ color: 'var(--cs-text-muted)', fontSize: '0.85rem' }}
+                onClick={() => { setStep('register'); setError(''); setSuccess(''); }}
+              >
+                ← Back to registration
+              </button>
+            </div>
           </form>
         )}
 

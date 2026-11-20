@@ -40,14 +40,15 @@ CREATE TABLE users (
 CREATE TABLE email_verifications (
     id BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
     user_id BIGINT UNSIGNED NOT NULL,
-    otp_code VARCHAR(6) NOT NULL,
+    otp_code VARCHAR(255) NOT NULL,
     expires_at DATETIME NOT NULL,
     is_used BOOLEAN NOT NULL DEFAULT FALSE,
+    attempts INT NOT NULL DEFAULT 0,
     created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
     CONSTRAINT fk_verifications_user 
         FOREIGN KEY (user_id) REFERENCES users(id) 
         ON DELETE CASCADE ON UPDATE CASCADE,
-    INDEX idx_verifications_user_lookup (user_id, otp_code, is_used)
+    INDEX idx_verifications_user_lookup (user_id, is_used, expires_at)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 -- -----------------------------------------------------------------------------

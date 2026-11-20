@@ -80,14 +80,15 @@ All reservation endpoints (`/listings/:id/claim`, `/offers/:id/accept`) implemen
 - **Method & Path:** `POST /api/v1/auth/register`
 - **Access Level:** Public
 - **Business Rules:**
-  - `email` must conform to approved college domain pattern (e.g., regex `^[a-zA-Z0-9._%+-]+@([a-zA-Z0-9-]+\.)*univ\.edu$`).
+  - `email` must be a valid email format (supports Gmail, Outlook, Yahoo, and institutional domains).
   - Password must be at least 8 characters and contain at least 1 uppercase letter, 1 number, and 1 special symbol.
-  - Automatically creates a row in `users` with `status = 'PENDING_VERIFICATION'` and dispatches a 6-digit OTP code stored in `email_verifications` (15-minute expiration).
+  - Automatically creates a row in `users` with `status = 'PENDING_VERIFICATION'` and dispatches a 6-digit OTP code stored as a hash in `email_verifications` (5-minute expiration) via Resend.
+  - If email delivery fails, the operation rolls back to prevent locked unverified accounts.
 
 #### Request Example
 ```json
 {
-  "email": "alex.smith@univ.edu",
+  "email": "student@gmail.com",
   "password": "Password123!",
   "fullName": "Alex Smith",
   "phoneNumber": "+1-555-0199",
@@ -101,16 +102,18 @@ All reservation endpoints (`/listings/:id/claim`, `/offers/:id/accept`) implemen
   "success": true,
   "data": {
     "userId": 105,
-    "email": "alex.smith@univ.edu",
+    "email": "student@gmail.com",
     "status": "PENDING_VERIFICATION",
-    "message": "Registration successful. A 6-digit verification code has been dispatched to your college email address."
+    "message": "Registration successful. A 6-digit verification code has been dispatched to your email address."
   }
 }
 ```
 
 #### Error Responses
-- `400 Bad Request`: `{"success": false, "error": {"code": "INVALID_EMAIL_DOMAIN", "message": "Registration requires an authorized college email address ending with univ.edu."}}`
+- `400 Bad Request`: `{"success": false, "error": {"code": "VALIDATION_ERROR", "message": "Please provide a valid email address."}}`
 - `409 Conflict`: `{"success": false, "error": {"code": "DUPLICATE_ENTITY", "message": "An account with this email address already exists."}}`
+- `502 Bad Gateway`: `{"success": false, "error": {"code": "EMAIL_DELIVERY_FAILED", "message": "Failed to dispatch verification email."}}`
+- `503 Service Unavailable`: `{"success": false, "error": {"code": "EMAIL_SERVICE_NOT_CONFIGURED", "message": "Email service is not configured. Please set RESEND_API_KEY in environment variables."}}`
 
 ---
 
@@ -118,14 +121,15 @@ All reservation endpoints (`/listings/:id/claim`, `/offers/:id/accept`) implemen
 - **Method & Path:** `POST /api/v1/auth/verify-email`
 - **Access Level:** Public
 - **Business Rules:**
-  - Validates 6-digit `otpCode` against `email_verifications`.
+  - Validates 6-digit `otpCode` against bcrypt-hashed code in `email_verifications`.
   - Checks `is_used = FALSE` and `expires_at > NOW()`.
+  - Enforces max 5 failed attempts before invalidating the OTP to prevent brute-force attacks.
   - Upon success, marks token `is_used = TRUE` and updates `users.status = 'ACTIVE'`.
 
 #### Request Example
 ```json
 {
-  "email": "alex.smith@univ.edu",
+  "email": "student@gmail.com",
   "otpCode": "849201"
 }
 ```
@@ -136,13 +140,45 @@ All reservation endpoints (`/listings/:id/claim`, `/offers/:id/accept`) implemen
   "success": true,
   "data": {
     "verified": true,
-    "message": "Institutional email verified successfully. You may now log in."
+    "message": "Email verified successfully. You may now log in."
   }
 }
 ```
 
 #### Error Responses
-- `400 Bad Request`: `{"success": false, "error": {"code": "INVALID_OTP", "message": "The verification code provided is invalid or has expired."}}`
+- `400 Bad Request`: `{"success": false, "error": {"code": "INVALID_OTP", "message": "Invalid verification code. You have 4 attempt(s) remaining."}}`
+- `400 Bad Request`: `{"success": false, "error": {"code": "TOO_MANY_ATTEMPTS", "message": "Maximum OTP verification attempts exceeded. This code has been invalidated. Please request a new OTP."}}`
+
+---
+
+### 2.3 Resend Verification OTP
+- **Method & Path:** `POST /api/v1/auth/resend-otp`
+- **Access Level:** Public
+- **Business Rules:**
+  - Requires user to exist in `PENDING_VERIFICATION` status.
+  - Enforces a 60-second cooldown period between OTP generation requests.
+  - Invalidates any previous pending OTPs, generates and hashes a new 6-digit code (5-min TTL), and dispatches via Resend.
+
+#### Request Example
+```json
+{
+  "email": "student@gmail.com"
+}
+```
+
+#### Success Response (`200 OK`)
+```json
+{
+  "success": true,
+  "data": {
+    "message": "A new verification code has been dispatched to your email address."
+  }
+}
+```
+
+#### Error Responses
+- `429 Too Many Requests`: `{"success": false, "error": {"code": "COOLDOWN_ACTIVE", "message": "Please wait 45 second(s) before requesting a new verification code."}}`
+- `400 Bad Request`: `{"success": false, "error": {"code": "ALREADY_VERIFIED", "message": "This account is already verified. Please sign in."}}`
 
 ---
 
