@@ -26,6 +26,18 @@ const isValidPassword = (password) => {
   return regex.test(password);
 };
 
+// Helper: obtain JWT secret with strict production check
+const getJwtSecret = () => {
+  const secret = process.env.JWT_SECRET;
+  if (!secret) {
+    if (process.env.NODE_ENV === 'production') {
+      throw new Error('JWT_SECRET environment variable is required in production.');
+    }
+    return 'campusswap_local_dev_secret_key_2026';
+  }
+  return secret;
+};
+
 /**
  * POST /api/v1/auth/register
  * Register a new student account (Direct registration, no OTP required)
@@ -108,7 +120,7 @@ router.post('/register', async (req, res, next) => {
         email: trimmedEmail,
         role: 'STUDENT'
       },
-      process.env.JWT_SECRET || 'campusswap_local_dev_secret_key_2026',
+      getJwtSecret(),
       {
         expiresIn: process.env.JWT_EXPIRES_IN || '24h'
       }
@@ -207,11 +219,11 @@ router.post('/login', async (req, res, next) => {
     // Generate JWT token
     const token = jwt.sign(
       {
-        userId,
-        email: trimmedEmail,
-        role: 'STUDENT'
+        userId: user.id,
+        email: user.email,
+        role: user.role
       },
-      process.env.JWT_SECRET,
+      getJwtSecret(),
       {
         expiresIn: process.env.JWT_EXPIRES_IN || '24h'
       }

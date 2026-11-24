@@ -198,12 +198,116 @@ Expected output:
 
 ## 📱 Walkthrough: Demo & End-to-End User Flow
 
-### 1. Student Registration & OTP Verification
+### 1. Direct Student Registration & Login
 1. Navigate to `http://localhost:3000/register`.
-2. Enter your details with a campus email (e.g. `alice@univ.edu`), password, and student ID.
+2. Enter your details with any valid email (e.g. `student@gmail.com`), password, full name, and department.
 3. Submit the registration form.
-4. **OTP Verification**: In local development mode, the 6-digit verification code is printed directly to the backend server terminal (e.g. `[CampusSwap Local Dev] Verification OTP for alice@univ.edu: 123456`).
-5. Enter the 6-digit OTP to activate your account and automatically log in.
+4. **Instant Activation**: The account is activated immediately upon creation. No OTP or email verification is required.
+5. The application automatically logs you in and redirects you directly to the marketplace listings.
+
+---
+
+## 🚀 Cloud Deployment Guide (Free Tier)
+
+CampusSwap is architected to deploy 100% on free cloud tiers:
+- **Database:** TiDB Cloud Serverless (MySQL-compatible, persistent, TLS-encrypted)
+- **Backend:** Render Free Web Service (Node.js runtime)
+- **Frontend:** Vercel Free Plan (Vite + React SPA)
+
+---
+
+### Step 1: Database (TiDB Cloud Serverless)
+1. Sign in to your [TiDB Cloud](https://tidbcloud.com) console.
+2. Under your Serverless Cluster, navigate to **Overview** → **Connect**.
+3. Choose **Connection Method**: `MySQL Client` or `General Connection String`.
+4. Note your credentials:
+   - **Host:** e.g. `gateway01.ap-southeast-1.prod.aws.tidbcloud.com`
+   - **Port:** `4000`
+   - **User:** e.g. `xxxxxx.root`
+   - **Password:** `<your-tidb-password>`
+   - **Database:** `campusswap`
+5. *Note: TiDB Cloud enforces TLS 1.2+ encryption automatically. CampusSwap enables SSL automatically when `NODE_ENV=production` or `DB_SSL=true`.*
+
+---
+
+### Step 2: Backend Deployment (Render)
+1. Go to your [Render Dashboard](https://dashboard.render.com) and click **New +** → **Web Service**.
+2. Connect your GitHub repository (`CampusSwap`).
+3. Configure the service:
+   - **Name:** `campusswap-backend` (or your choice)
+   - **Region:** `Singapore (Southeast Asia)` or closest to your database
+   - **Branch:** `main`
+   - **Root Directory:** `backend`
+   - **Runtime:** `Node`
+   - **Build Command:** `npm install`
+   - **Start Command:** `npm start`
+   - **Plan:** `Free`
+4. Add the following **Environment Variables** in Render's dashboard:
+   | Variable | Value | Description |
+   | :--- | :--- | :--- |
+   | `NODE_ENV` | `production` | Enables production mode & TLS |
+   | `DB_HOST` | `gateway01...tidbcloud.com` | TiDB Cloud host |
+   | `DB_PORT` | `4000` | TiDB Cloud port |
+   | `DB_NAME` | `campusswap` | Database name |
+   | `DB_USER` | `xxxxxx.root` | TiDB username |
+   | `DB_PASSWORD` | `<your-tidb-password>` | TiDB password |
+   | `DB_SSL` | `true` | Enforces TLS connection |
+   | `JWT_SECRET` | `<32+ char random string>` | Secure random key for signing tokens |
+   | `JWT_EXPIRES_IN` | `24h` | Token validity duration |
+   | `CORS_ORIGIN` | `https://<your-vercel-app>.vercel.app` | Allowed frontend origin (set after Step 3) |
+   | `FRONTEND_URL` | `https://<your-vercel-app>.vercel.app` | Frontend application URL |
+5. Click **Create Web Service**.
+6. Once deployed, copy your Render URL (e.g. `https://campusswap-backend.onrender.com`).
+7. Verify health: visit `https://campusswap-backend.onrender.com/api/v1/health` in your browser. It should return `{"status":"UP","database":"CONNECTED"}`.
+
+---
+
+### Step 3: Frontend Deployment (Vercel)
+1. Go to your [Vercel Dashboard](https://vercel.com) and click **Add New...** → **Project**.
+2. Import your GitHub repository (`CampusSwap`).
+3. Configure the project:
+   - **Framework Preset:** `Vite`
+   - **Root Directory:** Click `Edit` and select `frontend`
+   - **Build Command:** `npm run build` (default)
+   - **Output Directory:** `dist` (default)
+4. Add the **Environment Variable**:
+   | Variable | Value | Description |
+   | :--- | :--- | :--- |
+   | `VITE_API_BASE_URL` | `https://campusswap-backend.onrender.com/api/v1` | Render backend URL + `/api/v1` |
+5. Click **Deploy**.
+6. Vercel will build the frontend and provide your production URL (e.g. `https://campusswap.vercel.app`).
+7. *Note: `frontend/vercel.json` is included in the repository to automatically handle SPA client-side routing rewrites on page reloads.*
+
+---
+
+### Step 4: Finalize CORS on Render
+1. Return to your **Render Web Service** → **Environment**.
+2. Update `CORS_ORIGIN` and `FRONTEND_URL` with your actual Vercel domain:
+   ```
+   CORS_ORIGIN=https://campusswap.vercel.app
+   FRONTEND_URL=https://campusswap.vercel.app
+   ```
+3. Save changes. Render will automatically redeploy with the updated CORS policy.
+
+---
+
+### Step 5: Post-Deployment Verification Checklist
+- [ ] Visit `https://<your-vercel-app>.vercel.app` → Home and Marketplace catalog load without errors.
+- [ ] Direct Registration: Click **Register**, enter valid details, submit -> Account created immediately and auto-redirected to `/listings`.
+- [ ] Direct Login: Log out and sign in with the newly created account.
+- [ ] Create Listing: Click **+ New Listing**, publish an item -> Displays instantly in the marketplace.
+- [ ] Deep Linking: Refresh browser while on `/listings` or `/login` -> Page renders cleanly without 404 errors (SPA rewrite active).
+
+---
+
+### Step 6: Troubleshooting
+
+| Issue | Cause | Solution |
+| :--- | :--- | :--- |
+| **"Failed to load listings"** | CORS rejection or invalid API URL | Verify `VITE_API_BASE_URL` in Vercel includes `/api/v1` without trailing slashes. Verify `CORS_ORIGIN` in Render matches your exact Vercel URL (`https://...`). |
+| **Render 50-second initial delay** | Free tier spin-down | Render free tier spins down after 15 minutes of inactivity. First request takes ~30–50s to wake up; subsequent requests respond instantly. |
+| **TiDB connection error** | Missing SSL or firewall | Ensure `DB_SSL=true` is set. Verify your TiDB Cloud cluster status is Active and credentials match. |
+| **404 on page reload on Vercel** | Missing SPA rewrite rule | Ensure `frontend/vercel.json` exists with the rewrite rule to `/index.html`. |
 
 ### 2. Creating a Listing
 1. Click **+ New Listing** in the top navigation.

@@ -2,6 +2,9 @@ const mysql = require('mysql2/promise');
 const path = require('path');
 require('dotenv').config({ path: path.resolve(__dirname, '../.env') });
 
+const useSsl = process.env.DB_SSL !== undefined
+  ? process.env.DB_SSL === 'true'
+  : process.env.NODE_ENV === 'production';
 
 const pool = mysql.createPool({
   host: process.env.DB_HOST || '127.0.0.1',
@@ -16,12 +19,12 @@ const pool = mysql.createPool({
   charset: 'utf8mb4',
 
   // Enable TLS for production TiDB Cloud connections
-  ssl: process.env.NODE_ENV === 'production'
-    ? { minVersion: 'TLSv1.2' }
+  ssl: useSsl
+    ? { minVersion: 'TLSv1.2', rejectUnauthorized: true }
     : undefined
 });
 
-// Auto-check and migrate email_verifications table for hashed OTP support and attempt tracking
+// Auto-check and migrate email_verifications table for schema compatibility
 (async () => {
   try {
     const [tableCheck] = await pool.query("SHOW TABLES LIKE 'email_verifications'");

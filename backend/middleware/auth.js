@@ -1,6 +1,18 @@
 const jwt = require('jsonwebtoken');
 const pool = require('../config/database');
 
+// Helper: obtain JWT secret with strict production check
+const getJwtSecret = () => {
+  const secret = process.env.JWT_SECRET;
+  if (!secret) {
+    if (process.env.NODE_ENV === 'production') {
+      throw new Error('JWT_SECRET environment variable is required in production.');
+    }
+    return 'campusswap_local_dev_secret_key_2026';
+  }
+  return secret;
+};
+
 /**
  * Authentication Middleware:
  * Verifies Bearer JWT from Authorization header and attaches user to req.user.
@@ -19,7 +31,7 @@ const authenticate = async (req, res, next) => {
 
   const token = authHeader.split(' ')[1];
   try {
-    const decoded = jwt.verify(token, process.env.JWT_SECRET || 'campusswap_local_dev_secret_key_2026');
+    const decoded = jwt.verify(token, getJwtSecret());
     
     // Check if user exists and is active
     const [rows] = await pool.query(
@@ -53,7 +65,7 @@ const authenticate = async (req, res, next) => {
         success: false,
         error: {
           code: 'ACCOUNT_INACTIVE',
-          message: 'Account is not active. Please complete email verification.'
+          message: 'Account is not active.'
         }
       });
     }
