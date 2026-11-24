@@ -51,8 +51,8 @@ const corsOptions = {
 app.use(cors(corsOptions));
 app.use(express.json());
 
-// Basic health check endpoint
-app.get('/api/v1/health', async (req, res) => {
+// Basic health check endpoint (supports /api/v1/health and /health)
+app.get(['/api/v1/health', '/health'], async (req, res) => {
   try {
     const [rows] = await pool.query('SELECT 1 AS status');
     return res.status(200).json({
@@ -64,6 +64,12 @@ app.get('/api/v1/health', async (req, res) => {
       }
     });
   } catch (error) {
+    console.error('[Health Check DB Error]:', {
+      code: error.code,
+      errno: error.errno,
+      sqlState: error.sqlState,
+      message: error.message
+    });
     return res.status(500).json({
       success: false,
       error: {

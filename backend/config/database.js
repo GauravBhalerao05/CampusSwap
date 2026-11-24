@@ -6,9 +6,13 @@ const useSsl = process.env.DB_SSL !== undefined
   ? process.env.DB_SSL === 'true'
   : process.env.NODE_ENV === 'production';
 
+// Smart port fallback: TiDB Cloud default is 4000, standard MySQL is 3306
+const defaultPort = (process.env.DB_HOST && process.env.DB_HOST.includes('tidbcloud.com')) ? 4000 : 3306;
+const dbPort = Number(process.env.DB_PORT) || defaultPort;
+
 const pool = mysql.createPool({
   host: process.env.DB_HOST || '127.0.0.1',
-  port: Number(process.env.DB_PORT) || 3306,
+  port: dbPort,
   user: process.env.DB_USER || 'root',
   password: process.env.DB_PASSWORD || '',
   database: process.env.DB_NAME || 'campusswap',

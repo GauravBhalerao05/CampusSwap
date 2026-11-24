@@ -9,11 +9,30 @@ if (process.env.NODE_ENV === 'production') {
     console.error(`[FATAL] Missing required production environment variables: ${missing.join(', ')}`);
     process.exit(1);
   }
+  if (!process.env.DB_PASSWORD) {
+    console.warn('[WARN] DB_PASSWORD is not set in environment variables');
+  }
 }
 
+const pool = require('./config/database');
 const app = require('./app');
 
 const PORT = process.env.PORT || 5001;
+
+// Startup database connectivity check for diagnostics (non-blocking)
+pool.getConnection()
+  .then((conn) => {
+    console.log(`[DB] Database connection verified successfully`);
+    conn.release();
+  })
+  .catch((err) => {
+    console.error('[DB Error] Startup database connection failed:', {
+      code: err.code,
+      errno: err.errno,
+      sqlState: err.sqlState,
+      message: err.message
+    });
+  });
 
 app.listen(PORT, () => {
   console.log(`CampusSwap backend server running on port ${PORT}`);
