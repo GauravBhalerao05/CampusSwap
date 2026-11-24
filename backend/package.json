@@ -11,7 +11,8 @@
     "test:offers": "node test-offers.js",
     "test:transactions": "node test-transactions.js",
     "test:messages": "node test-messages.js",
-    "test": "npm run db:test && npm run test:auth && npm run test:listings && npm run test:offers && npm run test:transactions && npm run test:messages"
+    "test:cors": "node test-cors.js",
+    "test": "npm run db:test && npm run test:cors && npm run test:auth && npm run test:listings && npm run test:offers && npm run test:transactions && npm run test:messages"
   },
   "keywords": [],
   "author": "",
