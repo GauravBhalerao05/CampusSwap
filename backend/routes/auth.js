@@ -1,10 +1,8 @@
 const express = require('express');
 const bcrypt = require('bcryptjs');
-const crypto = require('crypto');
 const jwt = require('jsonwebtoken');
 const pool = require('../config/database');
 const { authenticate } = require('../middleware/auth');
-const emailService = require('../services/emailService');
 
 const router = express.Router();
 
@@ -28,17 +26,11 @@ const isValidPassword = (password) => {
   return regex.test(password);
 };
 
-// Helper: generate cryptographically secure 6-digit OTP
-const generateOTP = () => {
-  return crypto.randomInt(100000, 1000000).toString();
-};
-
 /**
  * POST /api/v1/auth/register
- * Register a new student account
+ * Register a new student account (Direct registration, no OTP required)
  */
 router.post('/register', async (req, res, next) => {
-  let createdUserId = null;
   try {
     const { email, password, fullName, phoneNumber, department } = req.body;
 
@@ -94,10 +86,10 @@ router.post('/register', async (req, res, next) => {
     const saltRounds = 10;
     const passwordHash = await bcrypt.hash(password, saltRounds);
 
-    // Insert user with status PENDING_VERIFICATION
+    // Insert user with status ACTIVE immediately (no OTP verification step)
     const [insertResult] = await pool.query(
       `INSERT INTO users (email, password_hash, full_name, phone_number, department, role, status)
-       VALUES (?, ?, ?, ?, ?, 'STUDENT', 'PENDING_VERIFICATION')`,
+       VALUES (?, ?, ?, ?, ?, 'STUDENT', 'ACTIVE')`,
       [
         trimmedEmail,
         passwordHash,
@@ -107,345 +99,38 @@ router.post('/register', async (req, res, next) => {
       ]
     );
 
-    createdUserId = insertResult.insertId;
+    const userId = insertResult.insertId;
 
-    // Generate cryptographically secure 6-digit OTP code (5-minute TTL)
-    const otpCode = generateOTP();
-    const expiresAt = new Date(Date.now() + 5 * 60 * 1000);
-
-    // Hash OTP before storing in database
-    const hashedOtp = await bcrypt.hash(otpCode, 10);
-
-    await pool.query(
-      `INSERT INTO email_verifications (user_id, otp_code, expires_at, is_used, attempts)
-       VALUES (?, ?, ?, FALSE, 0)`,
-      [createdUserId, hashedOtp, expiresAt]
-    );
-
-    // Dispatch verification email via Resend
-    try {
-      await emailService.sendVerificationOtpEmail({
-        toEmail: trimmedEmail,
-        fullName: fullName.trim(),
-        otpCode,
-        expiryMinutes: 5
-      });
-    } catch (emailErr) {
-      // Rollback newly created user & verification if email fails
-      if (createdUserId) {
-        await pool.query('DELETE FROM email_verifications WHERE user_id = ?', [createdUserId]);
-        await pool.query('DELETE FROM users WHERE id = ?', [createdUserId]);
-        createdUserId = null;
+    // Issue JWT token immediately upon successful registration
+    const token = jwt.sign(
+      {
+        userId,
+        email: trimmedEmail,
+        role: 'STUDENT'
+      },
+      process.env.JWT_SECRET || 'campusswap_local_dev_secret_key_2026',
+      {
+        expiresIn: process.env.JWT_EXPIRES_IN || '24h'
       }
-      return res.status(emailErr.status || 502).json({
-        success: false,
-        error: {
-          code: emailErr.code || 'EMAIL_DELIVERY_FAILED',
-          message: emailErr.message || 'Failed to dispatch verification email.'
-        }
-      });
-    }
-
-    const responseData = {
-      userId: createdUserId,
-      email: trimmedEmail,
-      status: 'PENDING_VERIFICATION',
-      message: 'Registration successful. A 6-digit verification code has been dispatched to your email address.'
-    };
-
-    // Include devOtp only in test environment to simplify automated test suites
-    if (process.env.NODE_ENV === 'test') {
-      responseData.devOtp = otpCode;
-    }
+    );
 
     return res.status(201).json({
       success: true,
-      data: responseData
-    });
-  } catch (err) {
-    if (createdUserId) {
-      try {
-        await pool.query('DELETE FROM email_verifications WHERE user_id = ?', [createdUserId]);
-        await pool.query('DELETE FROM users WHERE id = ?', [createdUserId]);
-      } catch (_) {}
-    }
-    next(err);
-  }
-});
-
-/**
- * POST /api/v1/auth/verify-email
- * Verify registration OTP
- */
-router.post('/verify-email', async (req, res, next) => {
-  try {
-    const { email, otpCode } = req.body;
-
-    if (!email || !otpCode) {
-      return res.status(400).json({
-        success: false,
-        error: {
-          code: 'VALIDATION_ERROR',
-          message: 'Email and otpCode are required.'
-        }
-      });
-    }
-
-    const trimmedEmail = email.trim().toLowerCase();
-    const cleanOtp = String(otpCode).trim();
-
-    // Find user
-    const [users] = await pool.query(
-      'SELECT id, status FROM users WHERE email = ?',
-      [trimmedEmail]
-    );
-
-    if (users.length === 0) {
-      return res.status(400).json({
-        success: false,
-        error: {
-          code: 'INVALID_OTP',
-          message: 'The verification code provided is invalid or has expired.'
-        }
-      });
-    }
-
-    const user = users[0];
-
-    // Find latest active verification code
-    const [tokens] = await pool.query(
-      `SELECT id, otp_code, expires_at, is_used, attempts
-       FROM email_verifications
-       WHERE user_id = ? AND is_used = FALSE AND expires_at > NOW()
-       ORDER BY created_at DESC
-       LIMIT 1`,
-      [user.id]
-    );
-
-    if (tokens.length === 0) {
-      return res.status(400).json({
-        success: false,
-        error: {
-          code: 'INVALID_OTP',
-          message: 'The verification code provided is invalid or has expired.'
-        }
-      });
-    }
-
-    const verificationToken = tokens[0];
-
-    // Enforce max 5 attempts to prevent brute force
-    if (verificationToken.attempts >= 5) {
-      await pool.query(
-        'UPDATE email_verifications SET is_used = TRUE WHERE id = ?',
-        [verificationToken.id]
-      );
-      return res.status(400).json({
-        success: false,
-        error: {
-          code: 'TOO_MANY_ATTEMPTS',
-          message: 'Maximum OTP verification attempts exceeded. This code has been invalidated. Please request a new OTP.'
-        }
-      });
-    }
-
-    // Verify OTP against stored hash (supporting legacy plain OTPs if present)
-    const isMatch = verificationToken.otp_code.startsWith('$2')
-      ? await bcrypt.compare(cleanOtp, verificationToken.otp_code)
-      : verificationToken.otp_code === cleanOtp;
-
-    if (!isMatch) {
-      const nextAttempts = verificationToken.attempts + 1;
-      if (nextAttempts >= 5) {
-        await pool.query(
-          'UPDATE email_verifications SET attempts = ?, is_used = TRUE WHERE id = ?',
-          [nextAttempts, verificationToken.id]
-        );
-        return res.status(400).json({
-          success: false,
-          error: {
-            code: 'TOO_MANY_ATTEMPTS',
-            message: 'Maximum OTP verification attempts exceeded. This code has been invalidated. Please request a new OTP.'
-          }
-        });
-      } else {
-        await pool.query(
-          'UPDATE email_verifications SET attempts = ? WHERE id = ?',
-          [nextAttempts, verificationToken.id]
-        );
-        const remainingAttempts = 5 - nextAttempts;
-        return res.status(400).json({
-          success: false,
-          error: {
-            code: 'INVALID_OTP',
-            message: `Invalid verification code. You have ${remainingAttempts} attempt(s) remaining.`
-          }
-        });
-      }
-    }
-
-    // Mark token as used, invalidate all other tokens for this user, and activate user
-    await pool.query(
-      'UPDATE email_verifications SET is_used = TRUE WHERE user_id = ?',
-      [user.id]
-    );
-
-    await pool.query(
-      "UPDATE users SET status = 'ACTIVE' WHERE id = ?",
-      [user.id]
-    );
-
-    return res.status(200).json({
-      success: true,
       data: {
-        verified: true,
-        message: 'Email verified successfully. You may now log in.'
+        userId,
+        email: trimmedEmail,
+        status: 'ACTIVE',
+        message: 'Account registered successfully.',
+        token,
+        user: {
+          id: userId,
+          email: trimmedEmail,
+          fullName: fullName.trim(),
+          role: 'STUDENT',
+          status: 'ACTIVE',
+          department: department ? department.trim() : null
+        }
       }
-    });
-  } catch (err) {
-    next(err);
-  }
-});
-
-/**
- * POST /api/v1/auth/resend-otp
- * Resend verification OTP with 60s cooldown
- */
-router.post('/resend-otp', async (req, res, next) => {
-  try {
-    const { email } = req.body;
-
-    if (!email) {
-      return res.status(400).json({
-        success: false,
-        error: {
-          code: 'VALIDATION_ERROR',
-          message: 'Email is required.'
-        }
-      });
-    }
-
-    const trimmedEmail = email.trim().toLowerCase();
-
-    if (!isValidEmail(trimmedEmail)) {
-      return res.status(400).json({
-        success: false,
-        error: {
-          code: 'VALIDATION_ERROR',
-          message: 'Please provide a valid email address.'
-        }
-      });
-    }
-
-    // Find user
-    const [users] = await pool.query(
-      'SELECT id, full_name, status FROM users WHERE email = ?',
-      [trimmedEmail]
-    );
-
-    if (users.length === 0) {
-      return res.status(404).json({
-        success: false,
-        error: {
-          code: 'USER_NOT_FOUND',
-          message: 'No account found with this email address.'
-        }
-      });
-    }
-
-    const user = users[0];
-
-    if (user.status === 'ACTIVE') {
-      return res.status(400).json({
-        success: false,
-        error: {
-          code: 'ALREADY_VERIFIED',
-          message: 'This account is already verified. Please sign in.'
-        }
-      });
-    }
-
-    if (user.status === 'SUSPENDED') {
-      return res.status(403).json({
-        success: false,
-        error: {
-          code: 'ACCOUNT_SUSPENDED',
-          message: 'This account has been suspended by campus moderators.'
-        }
-      });
-    }
-
-    // Check resend cooldown: 60 seconds
-    const [recentTokens] = await pool.query(
-      `SELECT id, created_at
-       FROM email_verifications
-       WHERE user_id = ?
-       ORDER BY created_at DESC
-       LIMIT 1`,
-      [user.id]
-    );
-
-    if (recentTokens.length > 0) {
-      const timeSinceLastOtp = Date.now() - new Date(recentTokens[0].created_at).getTime();
-      const cooldownMs = 60 * 1000;
-      if (timeSinceLastOtp < cooldownMs) {
-        const remainingSeconds = Math.ceil((cooldownMs - timeSinceLastOtp) / 1000);
-        return res.status(429).json({
-          success: false,
-          error: {
-            code: 'COOLDOWN_ACTIVE',
-            message: `Please wait ${remainingSeconds} second(s) before requesting a new verification code.`
-          }
-        });
-      }
-    }
-
-    // Invalidate previous unused verification codes
-    await pool.query(
-      'UPDATE email_verifications SET is_used = TRUE WHERE user_id = ? AND is_used = FALSE',
-      [user.id]
-    );
-
-    // Generate new cryptographically secure 6-digit OTP (5-minute TTL)
-    const otpCode = generateOTP();
-    const expiresAt = new Date(Date.now() + 5 * 60 * 1000);
-    const hashedOtp = await bcrypt.hash(otpCode, 10);
-
-    await pool.query(
-      `INSERT INTO email_verifications (user_id, otp_code, expires_at, is_used, attempts)
-       VALUES (?, ?, ?, FALSE, 0)`,
-      [user.id, hashedOtp, expiresAt]
-    );
-
-    // Send email via Resend
-    try {
-      await emailService.sendVerificationOtpEmail({
-        toEmail: trimmedEmail,
-        fullName: user.full_name,
-        otpCode,
-        expiryMinutes: 5
-      });
-    } catch (emailErr) {
-      return res.status(emailErr.status || 502).json({
-        success: false,
-        error: {
-          code: emailErr.code || 'EMAIL_DELIVERY_FAILED',
-          message: emailErr.message || 'Failed to dispatch verification email.'
-        }
-      });
-    }
-
-    const responseData = {
-      message: 'A new verification code has been dispatched to your email address.'
-    };
-
-    if (process.env.NODE_ENV === 'test') {
-      responseData.devOtp = otpCode;
-    }
-
-    return res.status(200).json({
-      success: true,
-      data: responseData
     });
   } catch (err) {
     next(err);
@@ -513,24 +198,20 @@ router.post('/login', async (req, res, next) => {
       });
     }
 
+    // Auto-activate any legacy pending user so they can log in without barriers
     if (user.status === 'PENDING_VERIFICATION') {
-      return res.status(403).json({
-        success: false,
-        error: {
-          code: 'ACCOUNT_INACTIVE',
-          message: 'Account is pending email verification. Please verify using the OTP sent to your email.'
-        }
-      });
+      await pool.query("UPDATE users SET status = 'ACTIVE' WHERE id = ?", [user.id]);
+      user.status = 'ACTIVE';
     }
 
     // Generate JWT token
     const token = jwt.sign(
       {
-        userId: user.id,
-        email: user.email,
-        role: user.role
+        userId,
+        email: trimmedEmail,
+        role: 'STUDENT'
       },
-      process.env.JWT_SECRET || 'campusswap_local_dev_secret_key_2026',
+      process.env.JWT_SECRET,
       {
         expiresIn: process.env.JWT_EXPIRES_IN || '24h'
       }

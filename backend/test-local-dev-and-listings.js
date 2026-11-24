@@ -1,10 +1,9 @@
 /**
- * Comprehensive Verification: Development Registration & Listings Fix
+ * Comprehensive Verification: Direct Registration & Listings
  * File: backend/test-local-dev-and-listings.js
  */
 
 process.env.NODE_ENV = 'development';
-delete process.env.RESEND_API_KEY;
 
 const http = require('http');
 const pool = require('./config/database');
@@ -13,13 +12,6 @@ const app = require('./app');
 let server;
 const TEST_PORT = 5088;
 const BASE_URL = `http://127.0.0.1:${TEST_PORT}`;
-
-let capturedTerminalLogs = [];
-const originalLog = console.log;
-console.log = (...args) => {
-  capturedTerminalLogs.push(args.join(' '));
-  originalLog(...args);
-};
 
 function makeRequest(method, path, body = null, token = null, headers = {}) {
   return new Promise((resolve, reject) => {
@@ -59,7 +51,7 @@ function makeRequest(method, path, body = null, token = null, headers = {}) {
 
 async function runAllTests() {
   console.log('\n======================================================');
-  console.log('   CAMPUSSWAP VERIFICATION: DEV REGISTRATION & LISTINGS');
+  console.log('   CAMPUSSWAP VERIFICATION: DIRECT REGISTRATION & LISTINGS');
   console.log('======================================================\n');
 
   let passed = 0;
@@ -80,7 +72,7 @@ async function runAllTests() {
   });
 
   const timestamp = Date.now();
-  const testEmail = `devtest.${timestamp}@gmail.com`;
+  const testEmail = `directuser.${timestamp}@gmail.com`;
   const testPassword = 'Password123!';
   let userId = null;
   let createdListingId = null;
@@ -88,11 +80,11 @@ async function runAllTests() {
 
   try {
     // -------------------------------------------------------------------------
-    // SECTION A: REGISTRATION & DEVELOPMENT OTP
+    // SECTION A: DIRECT REGISTRATION & LOGIN (NO OTP)
     // -------------------------------------------------------------------------
-    console.log('--- Testing Registration in Development Mode (Resend not configured) ---');
+    console.log('--- Testing Direct Registration & Login (No OTP) ---');
     
-    // 1. Register with Gmail
+    // 1. Register with Gmail directly
     const regRes = await makeRequest('POST', '/api/v1/auth/register', {
       email: testEmail,
       password: testPassword,
@@ -101,30 +93,25 @@ async function runAllTests() {
     });
     userId = regRes.body.data?.userId;
     assert(
-      regRes.status === 201 && regRes.body.success === true && regRes.body.data?.status === 'PENDING_VERIFICATION',
-      'A1. Registration with Gmail succeeds with 201 Created and PENDING_VERIFICATION'
+      regRes.status === 201 &&
+      regRes.body.success === true &&
+      regRes.body.data?.status === 'ACTIVE' &&
+      regRes.body.data?.user?.status === 'ACTIVE',
+      'A1. Direct registration with Gmail succeeds with 201 Created and ACTIVE status'
     );
     assert(
-      !regRes.body.data?.devOtp,
-      'A2. OTP is NOT exposed in the frontend API response'
+      !regRes.body.data?.devOtp && !regRes.body.data?.otpCode,
+      'A2. No OTP is generated or sent in response'
     );
 
-    // 2. OTP appears in backend terminal log
-    const otpLog = capturedTerminalLogs.find(l => l.includes('[DEV EMAIL] OTP:'));
+    // 2. Database stores user as ACTIVE
+    const [userRows] = await pool.query('SELECT status, email FROM users WHERE id = ?', [userId]);
     assert(
-      Boolean(otpLog),
-      'A3. Generated OTP appears in backend terminal log ([DEV EMAIL] OTP: XXXXXX)'
-    );
-    const terminalOtp = otpLog ? otpLog.split('[DEV EMAIL] OTP:')[1].trim() : '';
-
-    // 3. Stored OTP in DB is hashed
-    const [dbRows] = await pool.query('SELECT otp_code FROM email_verifications WHERE user_id = ?', [userId]);
-    assert(
-      dbRows[0].otp_code.startsWith('$2') && dbRows[0].otp_code !== terminalOtp,
-      'A4. Stored OTP in database is cryptographically hashed with bcrypt'
+      userRows.length > 0 && userRows[0].status === 'ACTIVE',
+      'A3. User record in database has status ACTIVE immediately upon registration'
     );
 
-    // 4. Duplicate registration rejection
+    // 3. Duplicate registration rejection
     const dupRes = await makeRequest('POST', '/api/v1/auth/register', {
       email: testEmail,
       password: testPassword,
@@ -132,38 +119,37 @@ async function runAllTests() {
     });
     assert(
       dupRes.status === 409 && dupRes.body.error?.code === 'DUPLICATE_ENTITY',
-      'A5. Duplicate email registration rejected with 409 DUPLICATE_ENTITY'
+      'A4. Duplicate email registration rejected with 409 DUPLICATE_ENTITY'
     );
 
-    // 5. Invalid OTP rejection
-    const wrongOtpRes = await makeRequest('POST', '/api/v1/auth/verify-email', {
+    // 4. Invalid credentials rejected
+    const badLoginRes = await makeRequest('POST', '/api/v1/auth/login', {
       email: testEmail,
-      otpCode: '999999'
+      password: 'WrongPassword999!'
     });
     assert(
-      wrongOtpRes.status === 400 && wrongOtpRes.body.error?.code === 'INVALID_OTP',
-      'A6. Invalid OTP rejected with 400 INVALID_OTP'
+      badLoginRes.status === 401 && badLoginRes.body.error?.code === 'INVALID_CREDENTIALS',
+      'A5. Invalid login credentials rejected with 401 INVALID_CREDENTIALS'
     );
 
-    // 6. Verify using the OTP from terminal
-    const verifyRes = await makeRequest('POST', '/api/v1/auth/verify-email', {
-      email: testEmail,
-      otpCode: terminalOtp
-    });
-    assert(
-      verifyRes.status === 200 && verifyRes.body.data?.verified === true,
-      'A7. Verifies user successfully with 200 OK and activates account'
-    );
-
-    // 7. Login after verification
+    // 5. Immediate login succeeds without OTP verification
     const loginRes = await makeRequest('POST', '/api/v1/auth/login', {
       email: testEmail,
       password: testPassword
     });
     authToken = loginRes.body.data?.token;
     assert(
-      loginRes.status === 200 && typeof authToken === 'string' && loginRes.body.data?.user?.status === 'ACTIVE',
-      'A8. Verified user successfully logs in and receives JWT authentication token'
+      loginRes.status === 200 &&
+      typeof authToken === 'string' &&
+      loginRes.body.data?.user?.status === 'ACTIVE',
+      'A6. Newly registered user logs in immediately with 200 OK and receives JWT token'
+    );
+
+    // 6. Access protected /me route
+    const meRes = await makeRequest('GET', '/api/v1/auth/me', null, authToken);
+    assert(
+      meRes.status === 200 && meRes.body.data?.email === testEmail,
+      'A7. Protected route /api/v1/auth/me accepts Bearer token'
     );
 
     // -------------------------------------------------------------------------
@@ -218,8 +204,8 @@ async function runAllTests() {
     // 6. Create a new listing with authenticated user
     const createRes = await makeRequest('POST', '/api/v1/listings', {
       categoryId: 1,
-      title: 'Dev Verification Textbook 2026',
-      description: 'Clean textbook used during local automated testing.',
+      title: 'College Project Demo Textbook',
+      description: 'Used during college demonstration testing.',
       mode: 'SELL',
       price: 25.00,
       itemCondition: 'GOOD',
@@ -228,7 +214,7 @@ async function runAllTests() {
     }, authToken);
     createdListingId = createRes.body.data?.id;
     assert(
-      createRes.status === 201 && createRes.body.success === true && createRes.body.data?.title === 'Dev Verification Textbook 2026',
+      createRes.status === 201 && createRes.body.success === true && createRes.body.data?.title === 'College Project Demo Textbook',
       'B7. Authenticated user successfully creates new listing with 201 Created'
     );
 
@@ -248,7 +234,6 @@ async function runAllTests() {
       await pool.query('DELETE FROM listings WHERE id = ?', [createdListingId]);
     }
     if (userId) {
-      await pool.query('DELETE FROM email_verifications WHERE user_id = ?', [userId]);
       await pool.query('DELETE FROM users WHERE id = ?', [userId]);
     }
 
@@ -265,4 +250,3 @@ runAllTests().catch(err => {
   console.error('Fatal error in test:', err);
   process.exit(1);
 });
-

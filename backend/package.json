@@ -7,12 +7,11 @@
     "dev": "node --watch server.js",
     "db:test": "node test-db.js",
     "test:auth": "node test-auth.js",
-    "test:email": "node test-email-verification.js",
     "test:listings": "node test-listings.js",
     "test:offers": "node test-offers.js",
     "test:transactions": "node test-transactions.js",
     "test:messages": "node test-messages.js",
-    "test": "npm run db:test && npm run test:auth && npm run test:email && npm run test:listings && npm run test:offers && npm run test:transactions && npm run test:messages"
+    "test": "npm run db:test && npm run test:auth && npm run test:listings && npm run test:offers && npm run test:transactions && npm run test:messages"
   },
   "keywords": [],
   "author": "",
@@ -24,7 +23,6 @@
     "dotenv": "^18.0.9",
     "express": "^5.3.0",
     "jsonwebtoken": "^9.0.3",
-    "mysql2": "^3.24.6",
-    "resend": "^6.4.2"
+    "mysql2": "^3.24.6"
   }
 }

@@ -34,8 +34,6 @@ export default function LoginPage() {
       const msg  = err.response?.data?.error?.message;
       if (code === 'ACCOUNT_SUSPENDED') {
         setError('Your account has been suspended by campus moderators.');
-      } else if (code === 'ACCOUNT_INACTIVE') {
-        setError('Please verify your email first before signing in.');
       } else {
         setError(msg || 'Invalid email or password.');
       }
